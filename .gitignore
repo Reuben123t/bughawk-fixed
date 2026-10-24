@@ -6,3 +6,6 @@ __pycache__/
 node_modules/
 *.pyc
 runner_workspaces/
+build/
+dist/
+*.spec
