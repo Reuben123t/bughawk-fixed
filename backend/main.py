@@ -394,7 +394,7 @@ def deploy_repo(request: DeployRequest):
         subprocess.run(["git", "add", "."], cwd=temp_dir, capture_output=True, check=True)
         subprocess.run(["git", "commit", "-m", "Initial commit: patched and verified by BugHawk"], cwd=temp_dir, capture_output=True, check=True)
         
-        push_url = f"https://x-access-token:{token}@github.com/{username}/{clean_name}.git"
+        push_url = f"https://{username}:{token}@github.com/{username}/{clean_name}.git"
         push_res = subprocess.run(
             ["git", "-c", "credential.helper=", "push", "-u", push_url, "main"],
             cwd=temp_dir,

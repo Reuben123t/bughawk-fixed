@@ -32,7 +32,7 @@ type VMStep = {
   diff?: string;
 };
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 const PRESET_REPOS = [
   { label: "infinite-fork-bomb (Blocked)", url: "https://github.com/exploit-archive/infinite-fork-bomb" },
