@@ -160,6 +160,8 @@ export default function Home() {
   const [creating, setCreating] = useState(false);
   const [createResult, setCreateResult] = useState<{success: boolean; repo_url?: string; error?: string; files?: Record<string,string>} | null>(null);
   const [activeTarget, setActiveTarget] = useState<any>(null);
+  const [vmDeployedRepo, setVmDeployedRepo] = useState<string | null>(null);
+  const [deployingToGithub, setDeployingToGithub] = useState(false);
 
   const [vmSteps, setVmSteps] = useState<VMStep[]>([
     { stage: "DISCOVERY", title: "Find Candidate Repositories", status: "pending", details: "Scans public GitHub event feed or target input" },
@@ -169,6 +171,7 @@ export default function Home() {
     { stage: "BASELINE", title: "Execute Baseline Tests", status: "pending", details: "Reproduces test failure in container" },
     { stage: "AI_FIX", title: "AI Analysis & Code Repair", status: "pending", details: "Synthesizes atomic bugfix diff" },
     { stage: "VERIFY", title: "Sandbox Test Verification", status: "pending", details: "Confirms 100% test pass rate in VM" },
+    { stage: "DEPLOY", title: "Automatic GitHub Deployment", status: "pending", details: "Creates & pushes new verified repo to your GitHub account" },
   ]);
 
   const [vmLogs, setVmLogs] = useState<VMLog[]>([
@@ -553,7 +556,53 @@ export default function Home() {
       addVmLog("verify", `SUCCESS: All verification tests passed (100% pass rate in 89ms).`, "green");
       addVmLog("vm", `Improvement summary: ${data.improvement.lines_modified} lines modified, zero regressions, sandbox cleaned up.`, "green");
 
-      setVmStatusText(`COMPLETED · ${target.repo_name} REPAIRED`);
+      // Step 8: AUTOMATIC GITHUB DEPLOYMENT
+      setVmStatusText("8/8 UPLOADING TO GITHUB AS NEW REPOSITORY…");
+      setVmCpu(90);
+      setVmRam(70);
+      setVmSteps((s) => s.map((item, idx) => (idx === 7 ? { ...item, status: "running" } : item)));
+      addVmLog("git", `Deploying patched repository to GitHub account...`);
+      await new Promise((r) => setTimeout(r, 600));
+
+      const rawBase = target.repo_name.includes("/") ? target.repo_name.split("/")[1] : target.repo_name;
+      const targetRepoName = `${rawBase}-fixed`;
+
+      const filesToDeploy: Record<string, string> = {
+        [target.file_to_patch]: target.new_code,
+        "README.md": `# ${targetRepoName}\n\nAutomated bugfix & upgrade applied to [${target.repo_name}](${target.repo_url}) by **BugHawk AI**.\n\n### 🐞 Identified Issue:\n- **Failing Test**: \`${target.failing_test}\`\n- **Error Trace**: \`${target.error_snippet}\`\n- **Root Cause**: ${target.root_cause}\n\n### 🛠️ AI Fix Applied:\n- **Patched File**: \`${target.file_to_patch}\`\n- **Explanation**: ${target.explanation}\n\n### ✅ Verification:\n- 100% test pass rate in isolated sandbox environment.\n- Zero regressions detected.\n`,
+      };
+
+      try {
+        const deployRes = await fetch("/api/github-upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "deploy_files",
+            repo_name: targetRepoName,
+            description: `Patched and verified version of ${target.repo_name} by BugHawk AI`,
+            private: false,
+            files: filesToDeploy,
+          }),
+        });
+
+        const deployData = await deployRes.json();
+
+        if (deployData.success && (deployData.repo_url || deployData.html_url)) {
+          const finalUrl = deployData.repo_url || deployData.html_url;
+          setVmSteps((s) => s.map((item, idx) => (idx === 7 ? { ...item, status: "completed", details: `Live at ${finalUrl}` } : item)));
+          addVmLog("git", `SUCCESS: Repository published to GitHub! URL: ${finalUrl}`, "green");
+          setVmDeployedRepo(finalUrl);
+          showToast(`🎉 Repository uploaded to your GitHub: ${finalUrl}`);
+        } else {
+          setVmSteps((s) => s.map((item, idx) => (idx === 7 ? { ...item, status: "failed", details: `Deploy note: ${deployData.error || "Failed"}` } : item)));
+          addVmLog("git", `Deploy notice: ${deployData.error || "Could not publish to GitHub"}`, "yellow");
+        }
+      } catch (deployErr: any) {
+        setVmSteps((s) => s.map((item, idx) => (idx === 7 ? { ...item, status: "failed", details: `Deploy error: ${deployErr.message}` } : item)));
+        addVmLog("git", `Deploy error: ${deployErr.message}`, "yellow");
+      }
+
+      setVmStatusText(`COMPLETED · ${target.repo_name} REPAIRED & UPLOADED`);
       setVmCpu(12);
       setVmRam(18);
     } catch (err: any) {
@@ -562,6 +611,45 @@ export default function Home() {
       setVmSteps((s) => s.map((item) => (item.status === "running" ? { ...item, status: "failed", details: `Failed: ${err.message}` } : item)));
     } finally {
       setVmRunning(false);
+    }
+  };
+
+  const deployCurrentVmPatch = async () => {
+    if (!activeTarget || !activeTarget.new_code) return;
+    setDeployingToGithub(true);
+    try {
+      const rawBase = activeTarget.repo_name.includes("/") ? activeTarget.repo_name.split("/")[1] : activeTarget.repo_name;
+      const targetRepoName = `${rawBase}-fixed`;
+
+      const filesToDeploy: Record<string, string> = {
+        [activeTarget.file_to_patch]: activeTarget.new_code,
+        "README.md": `# ${targetRepoName}\n\nAutomated bugfix & upgrade applied to [${activeTarget.repo_name}](${activeTarget.repo_url}) by **BugHawk AI**.\n\n### 🐞 Identified Issue:\n- **Failing Test**: \`${activeTarget.failing_test}\`\n- **Error Trace**: \`${activeTarget.error_snippet}\`\n- **Root Cause**: ${activeTarget.root_cause}\n\n### 🛠️ AI Fix Applied:\n- **Patched File**: \`${activeTarget.file_to_patch}\`\n- **Explanation**: ${activeTarget.explanation}\n\n### ✅ Verification:\n- 100% test pass rate in isolated sandbox environment.\n- Zero regressions detected.\n`,
+      };
+
+      const deployRes = await fetch("/api/github-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "deploy_files",
+          repo_name: targetRepoName,
+          description: `Patched and verified version of ${activeTarget.repo_name} by BugHawk AI`,
+          private: false,
+          files: filesToDeploy,
+        }),
+      });
+
+      const deployData = await deployRes.json();
+      if (deployData.success && (deployData.repo_url || deployData.html_url)) {
+        const finalUrl = deployData.repo_url || deployData.html_url;
+        setVmDeployedRepo(finalUrl);
+        showToast(`🎉 New repository created on your GitHub: ${finalUrl}`);
+      } else {
+        showToast(`❌ Deploy failed: ${deployData.error || "Unknown error"}`);
+      }
+    } catch (err: any) {
+      showToast(`❌ Deploy error: ${err.message}`);
+    } finally {
+      setDeployingToGithub(false);
     }
   };
 
@@ -1027,9 +1115,19 @@ export default function Home() {
                   </svg>
                   Verified Code Patch Applied in VM ({activeTarget?.file_to_patch || "workspace patch"})
                 </h4>
-                <span className="badge badge-critical" style={{ background: "rgba(16,185,129,0.2)", color: "#34d399", border: "1px solid rgba(16,185,129,0.3)" }}>
-                  ✓ 100% Tests Passed
-                </span>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <span className="badge badge-critical" style={{ background: "rgba(16,185,129,0.2)", color: "#34d399", border: "1px solid rgba(16,185,129,0.3)" }}>
+                    ✓ 100% Tests Passed
+                  </span>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    disabled={deployingToGithub}
+                    onClick={deployCurrentVmPatch}
+                    style={{ padding: "5px 12px", fontSize: 12, borderRadius: 6, cursor: "pointer" }}
+                  >
+                    {deployingToGithub ? "Pushing to GitHub…" : "🚀 Push to My GitHub"}
+                  </button>
+                </div>
               </div>
 
               <div className="diff-content-view">
@@ -1042,6 +1140,40 @@ export default function Home() {
                   }
                   return <span key={i} className="diff-line-ctx">{line}</span>;
                 })}
+              </div>
+            </div>
+          )}
+
+          {/* Live GitHub Deployment Banner */}
+          {vmDeployedRepo && (
+            <div className="deploy-success-banner" style={{ marginTop: 20 }}>
+              <span style={{ fontSize: 30 }}>🎉</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#10b981", letterSpacing: "0.08em", marginBottom: 3 }}>
+                  PUBLISHED TO YOUR GITHUB PROFILE
+                </div>
+                <div style={{ fontSize: 14, color: "#cbd5e1" }}>
+                  The repaired and verified repository was automatically uploaded to your account:
+                </div>
+                <div style={{ marginTop: 6 }}>
+                  <a
+                    href={vmDeployedRepo}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 15,
+                      fontWeight: 700,
+                      color: "#60a5fa",
+                      textDecoration: "underline",
+                      wordBreak: "break-all"
+                    }}
+                  >
+                    {vmDeployedRepo} ↗
+                  </a>
+                </div>
               </div>
             </div>
           )}
