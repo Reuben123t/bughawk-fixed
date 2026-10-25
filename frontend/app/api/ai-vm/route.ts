@@ -58,19 +58,27 @@ export async function POST(request: Request) {
 
     if (targetUrl.trim()) {
       const { normalizedUrl, repoName } = normalizeRepoUrl(targetUrl);
-      selectedTarget = {
-        repo_name: repoName,
-        repo_url: normalizedUrl,
-        language: "Python 3.11",
-        test_framework: "pytest 8.4",
-        failing_test: "test_repository_core_suite",
-        error_snippet: `AssertionError: Automated test failed in ${repoName} baseline validation`,
-        file_to_patch: "src/core.py",
-        old_code: "# Legacy logic\ndef process():\n    return False",
-        new_code: "# AI-repaired logic\ndef process():\n    return True",
-        root_cause: "Core module failed edge-case test asserting correct boundary invariants.",
-        explanation: "Refactored logic to satisfy automated test specifications and prevent regression.",
-      };
+      if (repoName.includes("bughawk") || repoName.includes("discount")) {
+        selectedTarget = {
+          ...SAMPLE_DISCOVERIES[0],
+          repo_name: repoName,
+          repo_url: normalizedUrl,
+        };
+      } else {
+        selectedTarget = {
+          repo_name: repoName,
+          repo_url: normalizedUrl,
+          language: "Python 3.11",
+          test_framework: "pytest 8.4",
+          failing_test: "test_apply_discount_negative_bound",
+          error_snippet: `AssertionError: calculate_discount(100, 1.5) returned -50, expected 0.0 in ${repoName}`,
+          file_to_patch: "discount_calculator/calculator.py",
+          old_code: "def calculate_discount(price: float, discount: float) -> float:\n    return price * (1 - discount)",
+          new_code: "def calculate_discount(price: float, discount: float) -> float:\n    final_price = price * (1 - min(discount, 1.0))\n    return max(0.0, final_price)",
+          root_cause: "Discount rate was not bounded, causing negative balance on high discount percentage.",
+          explanation: "Added clamp boundary to discount calculation to ensure non-negative totals.",
+        };
+      }
     } else {
       selectedTarget = SAMPLE_DISCOVERIES[discoveryIndex % SAMPLE_DISCOVERIES.length];
     }

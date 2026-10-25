@@ -21,7 +21,7 @@ type VMLog = {
   time: string;
   tag: "discover" | "security" | "vm" | "git" | "baseline" | "ai" | "patch" | "verify";
   message: string;
-  highlight?: "red" | "green" | "cyan";
+  highlight?: "red" | "green" | "cyan" | "yellow";
 };
 
 type VMStep = {
@@ -523,8 +523,8 @@ export default function Home() {
       setVmSteps((s) => s.map((item, idx) => (idx === 4 ? { ...item, status: "running" } : item)));
       addVmLog("baseline", `Executing: ${target.test_framework} -q in isolated sandbox...`);
       await new Promise((r) => setTimeout(r, 900));
-      setVmSteps((s) => s.map((item, idx) => (idx === 4 ? { ...item, status: "failed", details: `Reproduced: ${target.failing_test}` } : item)));
-      addVmLog("baseline", `Test failure captured: ${target.error_snippet}`, "red");
+      setVmSteps((s) => s.map((item, idx) => (idx === 4 ? { ...item, status: "completed", details: `✓ Bug Isolated: ${target.failing_test}` } : item)));
+      addVmLog("baseline", `Test failure captured & isolated: ${target.error_snippet}`, "yellow");
 
       // Step 6: AI ANALYSIS & PATCH
       setVmStatusText("6/7 AI REASONING & ATOMIC PATCH SYNTHESIS…");
@@ -559,6 +559,7 @@ export default function Home() {
     } catch (err: any) {
       addVmLog("vm", `Workflow failed: ${err.message}`, "red");
       setVmStatusText("ERROR ENCOUNTERED");
+      setVmSteps((s) => s.map((item) => (item.status === "running" ? { ...item, status: "failed", details: `Failed: ${err.message}` } : item)));
     } finally {
       setVmRunning(false);
     }
@@ -1006,7 +1007,7 @@ export default function Home() {
                   <span className="log-time">{log.time}</span>
                   <span className={`log-tag tag-${log.tag}`}>{log.tag}</span>
                   <span
-                    className={`log-msg ${log.highlight === "red" ? "highlight-red" : log.highlight === "green" ? "highlight-green" : log.highlight === "cyan" ? "highlight-cyan" : ""}`}
+                    className={`log-msg ${log.highlight === "red" ? "highlight-red" : log.highlight === "green" ? "highlight-green" : log.highlight === "cyan" ? "highlight-cyan" : log.highlight === "yellow" ? "highlight-yellow" : ""}`}
                   >
                     {log.message}
                   </span>

@@ -1112,6 +1112,7 @@ pre {
 .log-msg.highlight-red { color: #fca5a5; }
 .log-msg.highlight-green { color: #86efac; font-weight: 600; }
 .log-msg.highlight-cyan { color: #67e8f9; }
+.log-msg.highlight-yellow { color: #fde047; font-weight: 600; }
 
 /* Timeline Step Cards */
 .timeline-grid {
