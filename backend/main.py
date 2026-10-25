@@ -11,16 +11,91 @@ from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+load_dotenv()
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = ROOT / "sample_project"
 ALLOWED_EXTENSIONS = {".py", ".toml", ".ini", ".cfg", ".txt"}
 BLOCKED_FILENAMES = {".env", ".env.example"}
 app = FastAPI(title="BugHawk API", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
+
+
+class BlockRepoRequest(BaseModel):
+    repo_url: str
+    repo_name: str | None = None
+    reason: str = "Repository checking blocked"
+    description: str = ""
+    severity: Literal["low", "medium", "high", "critical"] = "high"
+    blocked_by: str = "Community Contributor"
+    is_active: bool = True
+
+
+class CheckRepoRequest(BaseModel):
+    repo_url: str
+
+
+def normalize_repo_identifier(url_or_name: str) -> tuple[str, str]:
+    trimmed = url_or_name.strip()
+    if trimmed.endswith("/"):
+        trimmed = trimmed[:-1]
+    if trimmed.endswith(".git"):
+        trimmed = trimmed[:-4]
+    
+    if not trimmed.startswith("http://") and not trimmed.startswith("https://"):
+        parts = [p for p in trimmed.split("/") if p]
+        if len(parts) >= 2:
+            name = f"{parts[0]}/{parts[1]}".lower()
+            return f"https://github.com/{name}", name
+    
+    try:
+        parsed = urlparse(trimmed)
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+        if len(parts) >= 2:
+            name = f"{parts[0]}/{parts[1]}".lower()
+            return f"https://github.com/{name}", name
+    except Exception:
+        pass
+    return trimmed, trimmed.lower()
+
+
+def check_repository_blocked(repo_url: str) -> dict | None:
+    """Check if repository is blocked in Supabase."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    normalized_url, repo_name = normalize_repo_identifier(repo_url)
+    try:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+        }
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(
+                f"{SUPABASE_URL}/rest/v1/blocked_repositories",
+                headers=headers,
+                params={"is_active": "eq.true", "select": "*"}
+            )
+            if resp.status_code == 200:
+                blocked_list = resp.json()
+                for item in blocked_list:
+                    item_url = item.get("repo_url", "").lower().rstrip("/")
+                    if item_url.endswith(".git"):
+                        item_url = item_url[:-4]
+                    item_name = item.get("repo_name", "").lower()
+                    if item_name == repo_name or item_url == normalized_url.lower():
+                        return item
+    except Exception as exc:
+        print(f"[Supabase] Warning: Error checking blocked repositories: {exc}")
+    return None
+
 
 
 class DebugRequest(BaseModel):
@@ -194,6 +269,15 @@ def debug(request: DebugRequest):
             shutil.copytree(SAMPLE, workspace, dirs_exist_ok=True)
         else:
             url = validate_repo_url(request.repository_url) if request.repository_url else discover_repository()
+            # Enforce Blocklist Check
+            blocked_entry = check_repository_blocked(url)
+            if blocked_entry:
+                reason = blocked_entry.get("reason", "Prohibited by repository security policy")
+                severity = blocked_entry.get("severity", "high")
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Repository checking is blocked for '{url}'. Reason: {reason} (Severity: {severity.upper()}). This repository is prohibited from being checked."
+                )
             clean_name = Path(urlparse(url).path).stem
             if clean_name:
                 repo_hint = clean_name
@@ -333,4 +417,129 @@ def deploy_repo(request: DeployRequest):
 
 def deploy_files(repo_name: str, description: str, private: bool, files: dict[str, str]) -> dict:
     return deploy_repo(DeployRequest(repo_name=repo_name, description=description, private=private, files=files))
+
+
+@app.get("/api/blocked")
+def get_blocked_repositories():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return []
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(
+                f"{SUPABASE_URL}/rest/v1/blocked_repositories",
+                headers=headers,
+                params={"select": "*", "order": "created_at.desc"}
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            raise HTTPException(resp.status_code, resp.text)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to retrieve blocked repositories: {exc}")
+
+
+@app.post("/api/check-repo")
+def check_repo_endpoint(request: CheckRepoRequest):
+    blocked_entry = check_repository_blocked(request.repo_url)
+    if blocked_entry:
+        return {
+            "blocked": True,
+            "message": f"Checking is BLOCKED for '{blocked_entry.get('repo_name', request.repo_url)}'.",
+            "rule": blocked_entry
+        }
+    return {
+        "blocked": False,
+        "message": "Repository checking is ALLOWED."
+    }
+
+
+@app.post("/api/blocked")
+def add_blocked_repository(request: BlockRepoRequest):
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise HTTPException(503, "Supabase credentials are not configured in environment.")
+    normalized_url, repo_name = normalize_repo_identifier(request.repo_url)
+    repo_name = request.repo_name or repo_name
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+    payload = {
+        "repo_url": normalized_url,
+        "repo_name": repo_name,
+        "reason": request.reason,
+        "description": request.description,
+        "severity": request.severity,
+        "blocked_by": request.blocked_by,
+        "is_active": request.is_active,
+    }
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(
+                f"{SUPABASE_URL}/rest/v1/blocked_repositories",
+                headers=headers,
+                json=payload
+            )
+            if resp.status_code in (200, 201):
+                return resp.json()
+            if resp.status_code == 409 or "duplicate key" in resp.text:
+                raise HTTPException(409, f"Repository '{repo_name}' is already in the blocklist.")
+            raise HTTPException(resp.status_code, resp.text)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to add blocked repository: {exc}")
+
+
+@app.patch("/api/blocked/{repo_id}")
+def toggle_blocked_repository(repo_id: str, updates: dict):
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise HTTPException(503, "Supabase credentials are not configured in environment.")
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.patch(
+                f"{SUPABASE_URL}/rest/v1/blocked_repositories?id=eq.{repo_id}",
+                headers=headers,
+                json=updates
+            )
+            if resp.status_code in (200, 204):
+                return resp.json() if resp.text else {"status": "updated"}
+            raise HTTPException(resp.status_code, resp.text)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to update blocked repository: {exc}")
+
+
+@app.delete("/api/blocked/{repo_id}")
+def delete_blocked_repository(repo_id: str):
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise HTTPException(503, "Supabase credentials are not configured in environment.")
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+    }
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.delete(
+                f"{SUPABASE_URL}/rest/v1/blocked_repositories?id=eq.{repo_id}",
+                headers=headers
+            )
+            if resp.status_code in (200, 204):
+                return {"status": "deleted"}
+            raise HTTPException(resp.status_code, resp.text)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to delete blocked repository: {exc}")
+
 

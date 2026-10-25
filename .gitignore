@@ -1,11 +1,28 @@
+# Environment & Secrets
 .env
-.env.example
+.env*.local
+.env.*
+*.env
+*.env.local
+frontend/.env*
+!*.env.example
+!.env.example
+
+# Python
 .venv/
 __pycache__/
-.next/
-node_modules/
-*.pyc
+*.py[cod]
 runner_workspaces/
 build/
 dist/
 *.spec
+.pytest_cache/
+
+# Node / Next.js
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+.vercel/
+*.log
